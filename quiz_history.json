@@ -38,5 +38,21 @@
     "total": 10,
     "percentage": 40.0,
     "mode": "learning"
+  },
+  {
+    "id": "11ae2716-d519-4e70-964a-a0b63bd5849f",
+    "date": "2026-02-26T10:27:47.720443",
+    "score": 0,
+    "total": 10,
+    "percentage": 0.0,
+    "mode": "learning"
+  },
+  {
+    "id": "223d5661-5021-463b-a05a-fd9604c6f0a5",
+    "date": "2026-02-26T11:48:43.958822",
+    "score": 20,
+    "total": 40,
+    "percentage": 50.0,
+    "mode": "learning"
   }
 ]

@@ -35,9 +35,17 @@ def parse_questions(filepath):
 
         options = {}
         correct_answer = None
+        explanation = None
 
         for line in lines[1:]:
             line = line.strip()
+
+            # Check for explanation
+            if line.startswith("EXPLANATION:"):
+                explanation = line.replace("EXPLANATION:", "").strip()
+                continue
+
+            # Check for options
             opt_match = re.match(r"^([A-D])[\.\)](.+)", line)
             if opt_match:
                 opt_letter = opt_match.group(1)
@@ -54,6 +62,7 @@ def parse_questions(filepath):
                     "question": question_text,
                     "options": options,
                     "correct_answer": correct_answer,
+                    "explanation": explanation,
                 }
             )
 
@@ -89,7 +98,6 @@ def start_quiz(all_questions, num_questions, mode):
         q["answered"] = False
 
         correct_letter = q.get("correct_answer", "A")
-        correct_text = q.get("options", {}).get(correct_letter, "")
 
         option_map = {}
         letters = ["A", "B", "C", "D"]
@@ -97,7 +105,7 @@ def start_quiz(all_questions, num_questions, mode):
             if letter in q.get("options", {}):
                 opt_text = q["options"][letter]
                 option_map[letter] = {
-                    "text": opt_text[:200],
+                    "text": opt_text,
                     "type": "correct" if letter == correct_letter else "wrong",
                 }
 
@@ -121,12 +129,17 @@ def show_question(q, mode, idx):
     quiz_options = q.get("quiz_options", {})
     option_letters = ["A", "B", "C", "D"]
 
+    def format_option(x):
+        if x in quiz_options:
+            text = quiz_options[x].get("text", "")
+            preview = text[:300] + "..." if len(text) > 300 else text
+            return f"{x}. {preview}"
+        return x
+
     selected = st.radio(
         "Select your answer:",
         option_letters,
-        format_func=lambda x: f"{x}. {quiz_options.get(x, {}).get('text', '')}"
-        if x in quiz_options
-        else x,
+        format_func=format_option,
         key=f"question_{idx}",
         disabled=mode == "learning" and q.get("answered", False),
     )
@@ -148,9 +161,11 @@ def show_question(q, mode, idx):
             else:
                 st.error(f"✗ Incorrect. The correct answer is {correct}.")
 
-            st.markdown(
-                f"**Explanation:** {quiz_options.get(correct, {}).get('text', '')}"
+            explanation = q.get(
+                "explanation", quiz_options.get(correct, {}).get("text", "")
             )
+            if explanation:
+                st.markdown(f"**Explanation:** {explanation}")
     else:
         q["user_answer"] = selected
 
@@ -188,6 +203,10 @@ def show_results(quiz_questions, mode):
             else:
                 st.error(f"✗ Your answer: {user_ans or 'None'} | Correct: {correct}")
 
+            explanation = q.get("explanation")
+            if explanation:
+                st.markdown(f"**Explanation:** {explanation}")
+
     percentage = (score / len(quiz_questions)) * 100
     st.markdown(f"### Score: {score}/{len(quiz_questions)} ({percentage:.1f}%)")
 
@@ -222,6 +241,101 @@ def show_history():
         col3.metric("Recent Average (last 5)", f"{recent_avg:.1f}%")
 
 
+def show_all_questions(questions):
+    st.markdown("## All Questions")
+    history = load_history()
+
+    question_stats = {}
+    for attempt in history:
+        for result in attempt.get("question_results", []):
+            q_id = result.get("q_id")
+            if q_id not in question_stats:
+                question_stats[q_id] = {"correct": 0, "total": 0}
+            question_stats[q_id]["total"] += 1
+            if result.get("correct"):
+                question_stats[q_id]["correct"] += 1
+
+    filter_option = st.selectbox(
+        "Filter by:",
+        [
+            "All Questions",
+            "Never Attempted",
+            "Correct All Time",
+            "Incorrect At Least Once",
+            "Need Practice",
+        ],
+    )
+
+    filtered_questions = questions
+    if filter_option == "Never Attempted":
+        filtered_questions = [q for q in questions if q["id"] not in question_stats]
+    elif filter_option == "Correct All Time":
+        filtered_questions = [
+            q
+            for q in questions
+            if q["id"] in question_stats
+            and question_stats[q["id"]]["correct"] == question_stats[q["id"]]["total"]
+        ]
+    elif filter_option == "Incorrect At Least Once":
+        filtered_questions = [
+            q
+            for q in questions
+            if q["id"] in question_stats
+            and question_stats[q["id"]]["correct"] < question_stats[q["id"]]["total"]
+        ]
+    elif filter_option == "Need Practice":
+        filtered_questions = [q for q in questions if q["id"] in question_stats]
+        filtered_questions = sorted(
+            filtered_questions,
+            key=lambda q: question_stats[q["id"]]["correct"]
+            / question_stats[q["id"]]["total"]
+            if question_stats[q["id"]]["total"] > 0
+            else 0,
+        )
+
+    st.markdown(f"Showing **{len(filtered_questions)}** questions")
+
+    search = st.text_input("Search questions:", "")
+    if search:
+        filtered_questions = [
+            q for q in filtered_questions if search.lower() in q["question"].lower()
+        ]
+        st.markdown(f"Found **{len(filtered_questions)}** matching questions")
+
+    for q in filtered_questions:
+        q_id = q["id"]
+        stats = question_stats.get(q_id, {"correct": 0, "total": 0})
+
+        if stats["total"] > 0:
+            score_pct = (stats["correct"] / stats["total"]) * 100
+            score_str = f"({stats['correct']}/{stats['total']} - {score_pct:.0f}%)"
+            if score_pct >= 80:
+                score_color = "green"
+            elif score_pct >= 50:
+                score_color = "orange"
+            else:
+                score_color = "red"
+            header = f"Q{q_id}: {q['question'][:80]}... {score_str}"
+        else:
+            header = f"Q{q_id}: {q['question'][:80]}... (Not attempted)"
+            score_color = "gray"
+
+        with st.expander(header):
+            st.markdown(f"**Question:** {q['question']}")
+
+            for opt_letter in ["A", "B", "C", "D"]:
+                if opt_letter in q.get("options", {}):
+                    opt_text = q["options"][opt_letter]
+                    is_correct = opt_letter == q.get("correct_answer")
+                    if is_correct:
+                        st.markdown(f"✅ **{opt_letter}.** {opt_text}")
+                    else:
+                        st.markdown(f"   **{opt_letter}.** {opt_text}")
+
+            if q.get("explanation"):
+                st.markdown(f"**Explanation:** {q['explanation']}")
+
+
 def main():
     st.set_page_config(page_title="AWS SAA-C03 Quiz", page_icon="📚")
 
@@ -236,7 +350,7 @@ def main():
     if "history" not in st.session_state:
         st.session_state.history = load_history()
 
-    tab1, tab2 = st.tabs(["📝 Quiz", "📊 History"])
+    tab1, tab2, tab3 = st.tabs(["📝 Quiz", "📊 History", "📚 All Questions"])
 
     with tab1:
         if not st.session_state.quiz_active:
@@ -289,6 +403,18 @@ def main():
                     score, total, percentage = show_results(quiz_questions, mode)
 
                     history = load_history()
+                    question_results = []
+                    for q in quiz_questions:
+                        user_ans = q.get("user_answer")
+                        correct = q.get("correct_answer")
+                        question_results.append(
+                            {
+                                "q_id": q.get("id"),
+                                "correct": user_ans == correct,
+                                "user_answer": user_ans,
+                                "correct_answer": correct,
+                            }
+                        )
                     history.append(
                         {
                             "id": str(uuid.uuid4()),
@@ -297,6 +423,7 @@ def main():
                             "total": total,
                             "percentage": percentage,
                             "mode": mode,
+                            "question_results": question_results,
                         }
                     )
                     save_history(history)
@@ -323,6 +450,18 @@ def main():
                         score, total, percentage = show_results(quiz_questions, mode)
 
                         history = load_history()
+                        question_results = []
+                        for q in quiz_questions:
+                            user_ans = q.get("user_answer")
+                            correct = q.get("correct_answer")
+                            question_results.append(
+                                {
+                                    "q_id": q.get("id"),
+                                    "correct": user_ans == correct,
+                                    "user_answer": user_ans,
+                                    "correct_answer": correct,
+                                }
+                            )
                         history.append(
                             {
                                 "id": str(uuid.uuid4()),
@@ -331,6 +470,7 @@ def main():
                                 "total": total,
                                 "percentage": percentage,
                                 "mode": mode,
+                                "question_results": question_results,
                             }
                         )
                         save_history(history)
@@ -342,6 +482,9 @@ def main():
 
     with tab2:
         show_history()
+
+    with tab3:
+        show_all_questions(questions)
 
 
 if __name__ == "__main__":
