@@ -90,9 +90,69 @@ def start_quiz(all_questions, num_questions, mode):
         and q.get("correct_answer")
         and "Choose two" not in q.get("question", "")
     ]
-    quiz_questions = random.sample(
-        all_questions_filtered, min(num_questions, len(all_questions_filtered))
-    )
+
+    if mode == "focused_learning":
+        history = load_history()
+        question_stats = {}
+        attempted_ids = set()
+
+        for attempt in history:
+            for result in attempt.get("question_results", []):
+                q_id = result.get("q_id")
+                attempted_ids.add(q_id)
+                if q_id not in question_stats:
+                    question_stats[q_id] = {"correct": 0, "total": 0}
+                question_stats[q_id]["total"] += 1
+                if result.get("correct"):
+                    question_stats[q_id]["correct"] += 1
+
+        weak_questions = []
+        new_questions = []
+
+        for q in all_questions_filtered:
+            q_id = q.get("id")
+            if q_id not in attempted_ids:
+                new_questions.append(q)
+            else:
+                stats = question_stats.get(q_id, {"correct": 0, "total": 0})
+                if stats["total"] > 0:
+                    success_rate = stats["correct"] / stats["total"]
+                    if success_rate <= 0.75:
+                        weak_questions.append(q)
+
+        weak_count = int(num_questions * 0.8)
+        new_count = num_questions - weak_count
+
+        weak_chosen = (
+            random.sample(weak_questions, min(weak_count, len(weak_questions)))
+            if weak_questions
+            else []
+        )
+
+        available_new = [q for q in new_questions if q not in weak_chosen]
+        new_chosen = (
+            random.sample(available_new, min(new_count, len(available_new)))
+            if available_new
+            else []
+        )
+
+        if len(weak_chosen) + len(new_chosen) < num_questions:
+            remaining = [
+                q
+                for q in all_questions_filtered
+                if q not in weak_chosen and q not in new_chosen
+            ]
+            needed = num_questions - len(weak_chosen) - len(new_chosen)
+            extra = random.sample(remaining, min(needed, len(remaining)))
+            weak_chosen.extend(extra)
+
+        quiz_questions = weak_chosen + new_chosen
+        random.shuffle(quiz_questions)
+    else:
+        quiz_questions = random.sample(
+            all_questions_filtered, min(num_questions, len(all_questions_filtered))
+        )
+
     for i, q in enumerate(quiz_questions):
         q["user_answer"] = None
         q["answered"] = False
@@ -141,12 +201,12 @@ def show_question(q, mode, idx):
         option_letters,
         format_func=format_option,
         key=f"question_{idx}",
-        disabled=mode == "learning" and q.get("answered", False),
+        disabled=mode in ("learning", "focused_learning") and q.get("answered", False),
     )
 
     correct = q.get("correct_answer", "A")
 
-    if mode == "learning":
+    if mode in ("learning", "focused_learning"):
         if not q.get("answered", False):
             if st.button("Submit Answer", key=f"submit_{idx}"):
                 q["user_answer"] = selected
@@ -306,34 +366,48 @@ def show_all_questions(questions):
         q_id = q["id"]
         stats = question_stats.get(q_id, {"correct": 0, "total": 0})
 
-        if stats["total"] > 0:
-            score_pct = (stats["correct"] / stats["total"]) * 100
-            score_str = f"({stats['correct']}/{stats['total']} - {score_pct:.0f}%)"
-            if score_pct >= 80:
-                score_color = "green"
-            elif score_pct >= 50:
-                score_color = "orange"
+        col1, col2 = st.columns([5, 1])
+
+        with col1:
+            if stats["total"] > 0:
+                score_pct = (stats["correct"] / stats["total"]) * 100
+                score_str = f"{stats['correct']}/{stats['total']} ({score_pct:.0f}%)"
+
+                if score_pct == 100:
+                    score_color = "green"
+                elif score_pct >= 50:
+                    score_color = "orange"
+                else:
+                    score_color = "red"
+
+                expander_label = f"Q{q_id}: {q['question'][:70]}..."
             else:
-                score_color = "red"
-            header = f"Q{q_id}: {q['question'][:80]}... {score_str}"
-        else:
-            header = f"Q{q_id}: {q['question'][:80]}... (Not attempted)"
-            score_color = "gray"
+                score_str = "—"
+                score_color = "gray"
+                expander_label = f"Q{q_id}: {q['question'][:70]}... (Not attempted)"
 
-        with st.expander(header):
-            st.markdown(f"**Question:** {q['question']}")
+            with st.expander(expander_label):
+                st.markdown(f"**Question:** {q['question']}")
 
-            for opt_letter in ["A", "B", "C", "D"]:
-                if opt_letter in q.get("options", {}):
-                    opt_text = q["options"][opt_letter]
-                    is_correct = opt_letter == q.get("correct_answer")
-                    if is_correct:
-                        st.markdown(f"✅ **{opt_letter}.** {opt_text}")
-                    else:
-                        st.markdown(f"   **{opt_letter}.** {opt_text}")
+                for opt_letter in ["A", "B", "C", "D"]:
+                    if opt_letter in q.get("options", {}):
+                        opt_text = q["options"][opt_letter]
+                        is_correct = opt_letter == q.get("correct_answer")
+                        if is_correct:
+                            st.markdown(f"✅ **{opt_letter}.** {opt_text}")
+                        else:
+                            st.markdown(f"   **{opt_letter}.** {opt_text}")
 
-            if q.get("explanation"):
-                st.markdown(f"**Explanation:** {q['explanation']}")
+                if q.get("explanation"):
+                    st.markdown(f"**Explanation:** {q['explanation']}")
+
+        with col2:
+            if stats["total"] > 0:
+                st.markdown("##### Score")
+                st.markdown(f":{score_color}[**{score_str}**]")
+            else:
+                st.markdown("##### Score")
+                st.markdown(":gray[**—**]")
 
 
 def main():
@@ -376,10 +450,14 @@ def main():
             with col2:
                 mode = st.radio(
                     "Quiz mode",
-                    ["learning", "real_test"],
+                    ["learning", "real_test", "focused_learning"],
                     format_func=lambda x: "Learning (answers after each question)"
                     if x == "learning"
-                    else "Real Test (answers at end)",
+                    else (
+                        "Real Test (answers at end)"
+                        if x == "real_test"
+                        else "Focused Learning (80% weak + 20% new)"
+                    ),
                 )
 
             if st.button("Start Quiz", type="primary"):
